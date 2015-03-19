@@ -1,0 +1,100 @@
+---
+title: "Practical Machine Learning Course Project - March 2014"
+author: "Jeremy Buck"
+date: "Monday, March 16, 2015"
+output: html_document
+---
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+training <- read.csv('pml-training.csv')
+test <- read.csv('pml-testing.csv')
+
+library(ggplot2);library(tree);library(randomForest);
+library(caret);library(doParallel)
+
+registerDoParallel(cores=detectCores())
+```
+
+For this course project we were asked to use data from accelerometers to correctly classify the manner in which a participant perfomed a basic barbell lift. There were 6 participants in total, each performing the excerise in 5 different ways, with 4 accelerometers (belt, forearm, arm, & dumbbell) measuring movement for each repetition. More information about the experiment can be found at this link: <http://groupware.les.inf.puc-rio.br/har>.
+
+Training data for this analysis can be found here: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+Test data can be found here: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+An examination of the training data reveals that there are 19,622 obersvations of 160 variables. However, not all of the variables will be useful for prediction purposes because either the information they provide is duplicative, we cannot assume that we will have the data when classifying a single new exercise, or they are simply not appropriate to use as a predictor if we want a robust classification model.
+
+The following variables were removed from the training set and not considered as possible predictors in the classification model:
+
+Specific Columns:
+```{r, echo=FALSE, collapse=TRUE, comment=NA}
+ignorecolumns<-c('X','user_name','raw_timestamp_part_1','raw_timestamp_part_2','cvtd_timestamp','new_window','num_window')
+
+ignorecolumns
+
+trainingsubset<-training[,grepl(paste(ignorecolumns,collapse='|'),names(training))==FALSE]
+```
+
+Summary columns with names beginning with (these would not be available when predicting a single repetition):
+```{r, echo=FALSE, collapse=TRUE, comment=NA}
+summaryvalues<-c('total','kurtosis','skewness','max','min','amplitude','var','avg','stddev')
+
+summaryvalues
+
+trainingsubset<-trainingsubset[,grepl(paste('^',summaryvalues,collapse='|','.*',sep=''),names(trainingsubset))==FALSE]
+```
+
+Once these columns are removed, 49 variables are left. **classe** represents how the exercise was performed, and is the column that we want to predict. The other 48 variables are 12 measurements from each of the 4 sensors. Not all of these measurements are likely to be useful, so we will first fit a single Random Forest tree so that we can evaluate the importance of each variable. 
+
+When this is done, the variables are sorted based on the importance and plotted:
+
+```{r, echo=FALSE}
+set.seed(1984)
+rf<-randomForest(classe~.,data=trainingsubset)
+varImp<-varImp(rf,useModel='rf',scale=TRUE)
+varImp$Predictor<-row.names(varImp)
+varImp<-varImp[order(-varImp$Overall),]
+varImp$Include<-'Exclude'
+varImp$Include[1:7]<-'Include'
+
+
+g1 <- ggplot(varImp,aes(x=1:nrow(varImp),y=Overall))
+g1 <- g1 + geom_point(aes(color=factor(Include)),size=4)
+g1 <- g1 + labs(title="Variable Importance Rank", x="Importance Rank",y="Importance Value",color="Model Inclusion")
+g1 <- g1 + theme(legend.position=c(1,1),legend.justification=c(1,1))
+g1 <- g1 + geom_text(data=subset(varImp,Include=='Include'),aes(1:7,Overall,label=Predictor),hjust=0,vjust=0.5,size=3)
+
+g1
+```
+
+After the 1st 7 variables we see a significant drop in importance. So to fit our full model we will only use these 7 variables to prevent us from overfitting the model, and to aid in processing time. 
+
+To build our model, we will leverage the **caret** package in **R** to build a random forest model, using 10-fold cross-validation:
+
+```{r, echo=FALSE, comment=NA}
+Predictors<-varImp[1:7,2]
+trainingsubset<-trainingsubset[,grepl(paste(Predictors,collapse='|'),names(trainingsubset))]
+trainingsubset$classe<-training$classe
+
+set.seed(1984)
+
+modFit<-train(classe~.,data=trainingsubset,method='rf',verbose=FALSE,n.trees=10,trControl=trainControl(method='repeatedcv',number=10,repeats=1))
+
+modFit$call
+
+modFit
+```
+
+We see that our Cross-Validation Accuracy is ~**98.87%**, which is how we would expect the model to perform if we used it to predict on a new dataset. Our out-of-sample error rate would therefore be expected to be ~**1.13**. 
+
+If we examine the confusion matrix for this model, we see that it performs reasonably well across all classification types:
+
+```{r, echo=FALSE, comment=NA}
+confusionMatrix(modFit)
+```
+
+When this model is applied to the test set of data, the following set of predictions are generated:
+
+```{r, echo=FALSE, comment=NA}
+answers<-as.character(predict(modFit,test[,grepl(paste(Predictors,collapse='|'),names(test))]))
+
+answers
+```
